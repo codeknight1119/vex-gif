@@ -64,6 +64,7 @@
           class="file-input w-full max-w-xs file-input-ghost file-input-bordered"
           @change="handleFileUpload"
           accept="image/png"
+          multiple
         />
 
         <div class="flex space-x-2">
@@ -86,6 +87,15 @@
             <Download :size="20" />
           </button>
         </div>
+      </div>
+
+      <div v-if="debugStats.hasData" class="mt-4 text-xs font-mono break-all p-4 bg-base-200 rounded">
+        <p class="font-bold">Debug Stats:</p>
+        <p><strong>Color Indices:</strong> {{ debugStats.colorIndices.join(', ') }}</p>
+        <br>
+        <p><strong>Image Indices:</strong> {{ debugStats.imageIndices.join(', ') }}</p>
+        <br>
+        <p><strong>Image Counts:</strong> {{ debugStats.imageCounts.join(', ') }}</p>
       </div>
 
       <div v-if="generatedCode">
@@ -120,18 +130,20 @@
 
 <script setup>
 import { watch, ref, onMounted } from 'vue'
-
 import { Sun, Moon, Download, Clipboard, ClipboardCheck, Github } from 'lucide-vue-next'
 import hljs from 'highlight.js'
-import '/src/assets/code.css'
+// import '/src/assets/code.css' // Ensure this path is correct for your project structure
 
 // ========== Theme Management ==========
 const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
 const isDarkTheme = ref(prefersDark)
 
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (event) => {
-  isDarkTheme.value = event.matches
-})
+// Handle media query listeners safely
+if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (event) => {
+      isDarkTheme.value = event.matches
+    })
+}
 
 onMounted(() => {
   watch(
@@ -151,6 +163,14 @@ const highlightedCode = ref('')
 const modalTitle = ref('')
 const modalContent = ref('')
 
+// FIXED: Created a reactive object to store debug stats instead of document.getElementById
+const debugStats = ref({
+    hasData: false,
+    colorIndices: [],
+    imageIndices: [],
+    imageCounts: []
+})
+
 function handleFileUpload(event) {
   const file = event.target.files[0]
   if (file) {
@@ -158,7 +178,7 @@ function handleFileUpload(event) {
     img.onload = function () {
       if (img.width === 480 && img.height === 240) {
         uploadedImage.value = img
-        processImage() // Start processing right after the image is validated
+        processImage()
       } else {
         modalTitle.value = 'Invalid Image Size'
         modalContent.value = `Image must be PNG format and have a size of 480×240 pixels. Your image is ${img.width}×${img.height} pixels.`
@@ -197,6 +217,7 @@ function encodeImage(imageData, width, height) {
       let color = ''
 
       if (a !== 0) {
+        // Hex conversion
         color = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
       }
 
@@ -212,11 +233,16 @@ function encodeImage(imageData, width, height) {
     }
   }
 
-  encodedImage.push([currentColor, repeatCount]) // Add the last color sequence
+  encodedImage.push([currentColor, repeatCount])
   return encodedImage
 }
 
 function generateCpp(encodedImage) {
+  // Local variables to track stats
+  var l_gifData_colorIndices = [];
+  var l_gifData_imageIndices = [];
+  var l_gifData_imageCounts = [];
+
   let cppCode = '#include "vex.h"\n\nusing namespace vex;\n\nvoid drawLogo() {\n'
   cppCode += '    static const char* imageColors[] = {\n        '
 
@@ -224,20 +250,30 @@ function generateCpp(encodedImage) {
     ...new Set(encodedImage.map((item) => item[0]).filter((color) => color !== ''))
   ]
   const colorIndices = {}
+  
   uniqueColors.forEach((color, index) => {
     colorIndices[color] = index
     cppCode += `"${color}", `
+    if(!l_gifData_colorIndices.includes(color)){
+      l_gifData_colorIndices.push(color)
+    }
   })
 
   cppCode += '\n    };\n\n    static const int imageIndices[] = {\n        '
   encodedImage.forEach((item) => {
     const index = item[0] === '' ? -1 : colorIndices[item[0]]
     cppCode += `${index}, `
+    if(!l_gifData_imageIndices.includes(index)){
+      l_gifData_imageIndices.push(index)
+    }
   })
 
   cppCode += '\n    };\n\n    static const int imageCounts[] = {\n        '
   encodedImage.forEach((item) => {
     cppCode += `${item[1]}, `
+    if(!l_gifData_imageCounts.includes(item[1])){
+      l_gifData_imageCounts.push(item[1])
+    }
   })
 
   cppCode += '\n    };\n'
@@ -248,6 +284,7 @@ function generateCpp(encodedImage) {
   cppCode += '        if(index >= 0) {\n'
   cppCode += '            const char* color = imageColors[index];\n'
   cppCode += '            Brain.Screen.setPenColor(color);\n'
+  // Optimization Tip: Drawing lines/rects is faster than pixels for VEX V5
   cppCode += '            for(int j = 0; j < count; ++j) {\n'
   cppCode += '                Brain.Screen.drawPixel(x++, y);\n'
   cppCode += '                if(x >= 480) { x = 0; y++; }\n'
@@ -258,6 +295,14 @@ function generateCpp(encodedImage) {
   cppCode += '        }\n'
   cppCode += '    }\n'
   cppCode += '}\n'
+
+  // FIXED: Update the reactive debug stats BEFORE returning
+  debugStats.value = {
+      hasData: true,
+      colorIndices: l_gifData_colorIndices,
+      imageIndices: l_gifData_imageIndices,
+      imageCounts: l_gifData_imageCounts
+  }
 
   return cppCode
 }
@@ -270,14 +315,12 @@ function downloadCode() {
   link.click()
 }
 
-// Watcher to update highlighted code when generatedCode changes
 watch(generatedCode, (newValue) => {
   if (newValue) {
     highlightedCode.value = hljs.highlight(newValue, { language: 'cpp' }).value
   }
 })
 
-// Highlight all code on initial mount
 onMounted(() => {
   hljs.highlightAll()
 })
